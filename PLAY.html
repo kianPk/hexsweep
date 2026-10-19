@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hexsweep</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #f4f7f5; --ink: #14201a; --muted: #667a70; --accent: #0f7a55;
+      --hex: #ffffff; --hex-open: #e7f3ed; --mine: #c4473a; --flag: #d97706;
+      --display: "Space Grotesk", system-ui, sans-serif; --body: "IBM Plex Sans", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh; font-family: var(--body); color: var(--ink);
+      background:
+        radial-gradient(800px 420px at 10% 0%, rgba(15,122,85,0.12), transparent 55%),
+        radial-gradient(700px 400px at 100% 100%, rgba(50,80,120,0.1), transparent 50%),
+        var(--bg);
+      display: grid; place-items: center; padding: 1rem;
+    }
+    .shell { width: min(100%, 560px); }
+    header { display: flex; justify-content: space-between; align-items: end; margin-bottom: 0.85rem; gap: 1rem; }
+    h1 { font-family: var(--display); font-size: 1.8rem; letter-spacing: -0.03em; }
+    h1 span { color: var(--accent); }
+    .panel { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: end; }
+    .chip, button.chip {
+      border: 1px solid rgba(20,32,26,0.12); background: #fff; border-radius: 999px;
+      padding: 0.45rem 0.8rem; font-size: 0.82rem; color: var(--muted); cursor: pointer;
+    }
+    .chip b { color: var(--ink); }
+    button.primary {
+      border: 0; background: var(--accent); color: #fff; font-family: var(--display);
+      font-weight: 700; border-radius: 10px; padding: 0.65rem 1rem; cursor: pointer;
+    }
+    .board-wrap {
+      background: rgba(255,255,255,0.65); border: 1px solid rgba(20,32,26,0.08);
+      border-radius: 16px; padding: 1rem; overflow: auto;
+    }
+    svg { display: block; margin: 0 auto; max-width: 100%; height: auto; user-select: none; }
+    .hex { cursor: pointer; transition: transform 0.12s; }
+    .hex:hover { filter: brightness(0.97); }
+    .msg {
+      margin-top: 0.85rem; min-height: 1.4rem; font-family: var(--display);
+      font-size: 1rem; color: var(--accent); text-align: center;
+    }
+    .help { margin-top: 0.5rem; font-size: 0.82rem; color: var(--muted); text-align: center; line-height: 1.5; }
+    footer { margin-top: 1rem; display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--muted); }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <h1>Hex<span>sweep</span></h1>
+      <div class="panel">
+        <span class="chip">Mines <b id="mines">0</b></span>
+        <span class="chip">Flags <b id="flags">0</b></span>
+        <span class="chip">Time <b id="time">0</b>s</span>
+        <button class="primary" id="new">New</button>
+      </div>
+    </header>
+    <div class="board-wrap">
+      <svg id="svg" viewBox="0 0 520 460" role="img" aria-label="Hexsweep board"></svg>
+    </div>
+    <div class="msg" id="msg"></div>
+    <p class="help">Left click / tap: reveal · Right click / long-press: flag<br/>Clear every safe hex. Numbers count adjacent mines (6 neighbors).</p>
+    <footer>
+      <span>Original game by Kian Zarandi</span>
+      <a href="https://github.com/kianPk/hexsweep">GitHub</a>
+    </footer>
+  </div>
+  <script>
+    const RADIUS = 5; // hex radius in cells (distance from center)
+    const SIZE = 22;
+    const svg = document.getElementById("svg");
+    const BEST = "hexsweep-wins";
+    let cells, mineCount, flags, startedAt, timer, ended, pressTimer;
+
+    const dirs = [[1,0],[0,1],[-1,1],[-1,0],[0,-1],[1,-1]];
+
+    function key(q, r) { return q + "," + r; }
+
+    function axialToPixel(q, r) {
+      const x = SIZE * (Math.sqrt(3) * q + Math.sqrt(3) / 2 * r);
+      const y = SIZE * (3 / 2 * r);
+      return { x: x + 260, y: y + 230 };
+    }
+
+    function hexPath(x, y, s = SIZE - 1.5) {
+      const pts = [];
+      for (let i = 0; i < 6; i++) {
+        const a = Math.PI / 180 * (60 * i - 30);
+        pts.push([x + s * Math.cos(a), y + s * Math.sin(a)]);
+      }
+      return pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ") + "Z";
+    }
+
+    function neighbors(q, r) {
+      return dirs.map(([dq, dr]) => key(q + dq, r + dr)).filter((k) => cells.has(k));
+    }
+
+    function build() {
+      clearInterval(timer); ended = false; flags = 0; startedAt = null;
+      document.getElementById("msg").textContent = "";
+      cells = new Map();
+      for (let q = -RADIUS; q <= RADIUS; q++) {
+        for (let r = -RADIUS; r <= RADIUS; r++) {
+          if (Math.max(Math.abs(q), Math.abs(r), Math.abs(-q - r)) <= RADIUS) {
+            cells.set(key(q, r), { q, r, mine: false, open: false, flag: false, n: 0 });
+          }
+        }
+      }
+      const keys = [...cells.keys()];
+      mineCount = Math.floor(keys.length * 0.18);
+      const picks = new Set();
+      while (picks.size < mineCount) picks.add(keys[Math.floor(Math.random() * keys.length)]);
+      for (const k of picks) cells.get(k).mine = true;
+      for (const c of cells.values()) {
+        c.n = neighbors(c.q, c.r).reduce((a, k) => a + (cells.get(k).mine ? 1 : 0), 0);
+      }
+      render(); hud();
+    }
+
+    function hud() {
+      document.getElementById("mines").textContent = mineCount;
+      document.getElementById("flags").textContent = flags;
+      document.getElementById("time").textContent = startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0;
+    }
+
+    function ensureTimer() {
+      if (startedAt) return;
+      startedAt = Date.now();
+      timer = setInterval(hud, 250);
+    }
+
+    function openCell(k) {
+      const c = cells.get(k);
+      if (!c || c.open || c.flag || ended) return;
+      ensureTimer();
+      c.open = true;
+      if (c.mine) { ended = true; clearInterval(timer); revealMines(); document.getElementById("msg").textContent = "Boom — try again"; render(); return; }
+      if (c.n === 0) neighbors(c.q, c.r).forEach(openCell);
+      if ([...cells.values()].every((x) => x.mine || x.open)) {
+        ended = true; clearInterval(timer);
+        const wins = Number(localStorage.getItem(BEST) || 0) + 1;
+        localStorage.setItem(BEST, String(wins));
+        document.getElementById("msg").textContent = `Cleared · wins ${wins}`;
+      }
+      render(); hud();
+    }
+
+    function toggleFlag(k) {
+      const c = cells.get(k);
+      if (!c || c.open || ended) return;
+      ensureTimer();
+      c.flag = !c.flag; flags += c.flag ? 1 : -1; render(); hud();
+    }
+
+    function revealMines() {
+      for (const c of cells.values()) if (c.mine) c.open = true;
+    }
+
+    function render() {
+      const nums = ["","#0f7a55","#2563eb","#b45309","#b91c1c","#7c3aed","#0e7490"];
+      let html = "";
+      for (const c of cells.values()) {
+        const { x, y } = axialToPixel(c.q, c.r);
+        const fill = !c.open ? "#ffffff" : c.mine ? "#f8d4d0" : "#e7f3ed";
+        const stroke = c.flag ? "#d97706" : "rgba(20,32,26,0.14)";
+        html += `<g class="hex" data-k="${key(c.q,c.r)}">`;
+        html += `<path d="${hexPath(x,y)}" fill="${fill}" stroke="${stroke}" stroke-width="${c.flag ? 2.5 : 1.2}"/>`;
+        if (c.open && c.mine) html += `<circle cx="${x}" cy="${y}" r="6" fill="#c4473a"/>`;
+        else if (c.open && c.n > 0) html += `<text x="${x}" y="${y + 4}" text-anchor="middle" font-size="12" font-family="Space Grotesk,sans-serif" font-weight="700" fill="${nums[c.n]}">${c.n}</text>`;
+        else if (c.flag && !c.open) html += `<text x="${x}" y="${y + 4}" text-anchor="middle" font-size="11">▲</text>`;
+        html += `</g>`;
+      }
+      svg.innerHTML = html;
+      svg.querySelectorAll(".hex").forEach((g) => {
+        g.addEventListener("click", (e) => { e.preventDefault(); openCell(g.dataset.k); });
+        g.addEventListener("contextmenu", (e) => { e.preventDefault(); toggleFlag(g.dataset.k); });
+        g.addEventListener("touchstart", (e) => {
+          pressTimer = setTimeout(() => { toggleFlag(g.dataset.k); pressTimer = null; }, 420);
+        }, { passive: true });
+        g.addEventListener("touchend", (e) => {
+          if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; openCell(g.dataset.k); }
+        });
+      });
+    }
+
+    document.getElementById("new").onclick = build;
+    build();
+  </script>
+</body>
+</html>
