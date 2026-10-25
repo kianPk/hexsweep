@@ -8,7 +8,6 @@
   <style>
     :root {
       --bg: #f4f7f5; --ink: #14201a; --muted: #667a70; --accent: #0f7a55;
-      --hex: #ffffff; --hex-open: #e7f3ed; --mine: #c4473a; --flag: #d97706;
       --display: "Space Grotesk", system-ui, sans-serif; --body: "IBM Plex Sans", system-ui, sans-serif;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -21,14 +20,15 @@
       display: grid; place-items: center; padding: 1rem;
     }
     .shell { width: min(100%, 560px); }
-    header { display: flex; justify-content: space-between; align-items: end; margin-bottom: 0.85rem; gap: 1rem; }
+    header { display: flex; justify-content: space-between; align-items: end; margin-bottom: 0.85rem; gap: 1rem; flex-wrap: wrap; }
     h1 { font-family: var(--display); font-size: 1.8rem; letter-spacing: -0.03em; }
     h1 span { color: var(--accent); }
-    .panel { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: end; }
+    .panel { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: end; align-items: center; }
     .chip, button.chip {
       border: 1px solid rgba(20,32,26,0.12); background: #fff; border-radius: 999px;
       padding: 0.45rem 0.8rem; font-size: 0.82rem; color: var(--muted); cursor: pointer;
     }
+    button.chip.active { border-color: var(--accent); color: var(--accent); background: #e7f3ed; }
     .chip b { color: var(--ink); }
     button.primary {
       border: 0; background: var(--accent); color: #fff; font-family: var(--display);
@@ -55,9 +55,13 @@
     <header>
       <h1>Hex<span>sweep</span></h1>
       <div class="panel">
+        <button class="chip" data-diff="easy" type="button">Easy</button>
+        <button class="chip active" data-diff="normal" type="button">Normal</button>
+        <button class="chip" data-diff="hard" type="button">Hard</button>
         <span class="chip">Mines <b id="mines">0</b></span>
         <span class="chip">Flags <b id="flags">0</b></span>
         <span class="chip">Time <b id="time">0</b>s</span>
+        <span class="chip">Best <b id="best">—</b></span>
         <button class="primary" id="new">New</button>
       </div>
     </header>
@@ -65,27 +69,50 @@
       <svg id="svg" viewBox="0 0 520 460" role="img" aria-label="Hexsweep board"></svg>
     </div>
     <div class="msg" id="msg"></div>
-    <p class="help">Left click / tap: reveal · Right click / long-press: flag<br/>Clear every safe hex. Numbers count adjacent mines (6 neighbors).</p>
+    <p class="help">Left click / tap: reveal · Right click / long-press: flag<br/>Middle click or both buttons (chord): open neighbors when flags match<br/>Clear every safe hex. Numbers count adjacent mines (6 neighbors).</p>
     <footer>
       <span>Original game by Kian Zarandi</span>
       <a href="https://github.com/kianPk/hexsweep">GitHub</a>
     </footer>
   </div>
   <script>
-    const RADIUS = 5; // hex radius in cells (distance from center)
-    const SIZE = 22;
+    const PRESETS = {
+      easy:   { radius: 3, mineRatio: 0.12, size: 28, cx: 260, cy: 230, vb: "0 0 520 460" },
+      normal: { radius: 5, mineRatio: 0.18, size: 22, cx: 260, cy: 230, vb: "0 0 520 460" },
+      hard:   { radius: 7, mineRatio: 0.22, size: 16, cx: 260, cy: 230, vb: "0 0 520 460" },
+    };
+    const BEST_KEY = "hexsweep-best-times";
     const svg = document.getElementById("svg");
-    const BEST = "hexsweep-wins";
-    let cells, mineCount, flags, startedAt, timer, ended, pressTimer;
-
     const dirs = [[1,0],[0,1],[-1,1],[-1,0],[0,-1],[1,-1]];
 
+    let difficulty = "normal";
+    let SIZE = 22, CX = 260, CY = 230;
+    let cells, mineCount, flags, startedAt, timer, ended, pressTimer;
+
     function key(q, r) { return q + "," + r; }
+
+    function loadBests() {
+      try { return JSON.parse(localStorage.getItem(BEST_KEY) || "{}"); }
+      catch { return {}; }
+    }
+
+    function bestFor(diff) {
+      const t = loadBests()[diff];
+      return typeof t === "number" ? t : null;
+    }
+
+    function saveBest(diff, seconds) {
+      const all = loadBests();
+      if (all[diff] == null || seconds < all[diff]) {
+        all[diff] = seconds;
+        localStorage.setItem(BEST_KEY, JSON.stringify(all));
+      }
+    }
 
     function axialToPixel(q, r) {
       const x = SIZE * (Math.sqrt(3) * q + Math.sqrt(3) / 2 * r);
       const y = SIZE * (3 / 2 * r);
-      return { x: x + 260, y: y + 230 };
+      return { x: x + CX, y: y + CY };
     }
 
     function hexPath(x, y, s = SIZE - 1.5) {
@@ -102,9 +129,13 @@
     }
 
     function build() {
+      const preset = PRESETS[difficulty];
+      SIZE = preset.size; CX = preset.cx; CY = preset.cy;
+      svg.setAttribute("viewBox", preset.vb);
       clearInterval(timer); ended = false; flags = 0; startedAt = null;
       document.getElementById("msg").textContent = "";
       cells = new Map();
+      const RADIUS = preset.radius;
       for (let q = -RADIUS; q <= RADIUS; q++) {
         for (let r = -RADIUS; r <= RADIUS; r++) {
           if (Math.max(Math.abs(q), Math.abs(r), Math.abs(-q - r)) <= RADIUS) {
@@ -113,7 +144,7 @@
         }
       }
       const keys = [...cells.keys()];
-      mineCount = Math.floor(keys.length * 0.18);
+      mineCount = Math.max(1, Math.floor(keys.length * preset.mineRatio));
       const picks = new Set();
       while (picks.size < mineCount) picks.add(keys[Math.floor(Math.random() * keys.length)]);
       for (const k of picks) cells.get(k).mine = true;
@@ -127,6 +158,8 @@
       document.getElementById("mines").textContent = mineCount;
       document.getElementById("flags").textContent = flags;
       document.getElementById("time").textContent = startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0;
+      const b = bestFor(difficulty);
+      document.getElementById("best").textContent = b == null ? "—" : b + "s";
     }
 
     function ensureTimer() {
@@ -140,15 +173,24 @@
       if (!c || c.open || c.flag || ended) return;
       ensureTimer();
       c.open = true;
-      if (c.mine) { ended = true; clearInterval(timer); revealMines(); document.getElementById("msg").textContent = "Boom — try again"; render(); return; }
-      if (c.n === 0) neighbors(c.q, c.r).forEach(openCell);
-      if ([...cells.values()].every((x) => x.mine || x.open)) {
-        ended = true; clearInterval(timer);
-        const wins = Number(localStorage.getItem(BEST) || 0) + 1;
-        localStorage.setItem(BEST, String(wins));
-        document.getElementById("msg").textContent = `Cleared · wins ${wins}`;
+      if (c.mine) {
+        ended = true; clearInterval(timer); revealMines();
+        document.getElementById("msg").textContent = "Boom — try again";
+        render(); return;
       }
+      if (c.n === 0) neighbors(c.q, c.r).forEach(openCell);
+      checkWin();
       render(); hud();
+    }
+
+    function checkWin() {
+      if (![...cells.values()].every((x) => x.mine || x.open)) return;
+      ended = true; clearInterval(timer);
+      const secs = Math.floor((Date.now() - startedAt) / 1000);
+      saveBest(difficulty, secs);
+      const b = bestFor(difficulty);
+      document.getElementById("msg").textContent = `Cleared in ${secs}s · best ${b}s (${difficulty})`;
+      hud();
     }
 
     function toggleFlag(k) {
@@ -156,6 +198,20 @@
       if (!c || c.open || ended) return;
       ensureTimer();
       c.flag = !c.flag; flags += c.flag ? 1 : -1; render(); hud();
+    }
+
+    /** Chord / middle-click: if open cell's flag count matches n, open unmarked neighbors. */
+    function chord(k) {
+      const c = cells.get(k);
+      if (!c || !c.open || c.n === 0 || ended) return;
+      const nbs = neighbors(c.q, c.r);
+      const flagCount = nbs.reduce((a, nk) => a + (cells.get(nk).flag ? 1 : 0), 0);
+      if (flagCount !== c.n) return;
+      ensureTimer();
+      for (const nk of nbs) {
+        const nb = cells.get(nk);
+        if (!nb.flag && !nb.open) openCell(nk);
+      }
     }
 
     function revealMines() {
@@ -172,13 +228,26 @@
         html += `<g class="hex" data-k="${key(c.q,c.r)}">`;
         html += `<path d="${hexPath(x,y)}" fill="${fill}" stroke="${stroke}" stroke-width="${c.flag ? 2.5 : 1.2}"/>`;
         if (c.open && c.mine) html += `<circle cx="${x}" cy="${y}" r="6" fill="#c4473a"/>`;
-        else if (c.open && c.n > 0) html += `<text x="${x}" y="${y + 4}" text-anchor="middle" font-size="12" font-family="Space Grotesk,sans-serif" font-weight="700" fill="${nums[c.n]}">${c.n}</text>`;
+        else if (c.open && c.n > 0) html += `<text x="${x}" y="${y + 4}" text-anchor="middle" font-size="${Math.max(10, SIZE * 0.55)}" font-family="Space Grotesk,sans-serif" font-weight="700" fill="${nums[c.n]}">${c.n}</text>`;
         else if (c.flag && !c.open) html += `<text x="${x}" y="${y + 4}" text-anchor="middle" font-size="11">▲</text>`;
         html += `</g>`;
       }
       svg.innerHTML = html;
       svg.querySelectorAll(".hex").forEach((g) => {
-        g.addEventListener("click", (e) => { e.preventDefault(); openCell(g.dataset.k); });
+        g.addEventListener("click", (e) => {
+          e.preventDefault();
+          if (e.detail > 1) return;
+          if (e.button === 1 || (e.buttons === 3)) { chord(g.dataset.k); return; }
+          openCell(g.dataset.k);
+        });
+        g.addEventListener("auxclick", (e) => {
+          if (e.button === 1) { e.preventDefault(); chord(g.dataset.k); }
+        });
+        g.addEventListener("mousedown", (e) => {
+          // Both buttons held (chord)
+          if (e.buttons === 3) { e.preventDefault(); chord(g.dataset.k); }
+        });
+        g.addEventListener("dblclick", (e) => { e.preventDefault(); chord(g.dataset.k); });
         g.addEventListener("contextmenu", (e) => { e.preventDefault(); toggleFlag(g.dataset.k); });
         g.addEventListener("touchstart", (e) => {
           pressTimer = setTimeout(() => { toggleFlag(g.dataset.k); pressTimer = null; }, 420);
@@ -189,6 +258,13 @@
       });
     }
 
+    document.querySelectorAll("[data-diff]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        difficulty = btn.dataset.diff;
+        document.querySelectorAll("[data-diff]").forEach((b) => b.classList.toggle("active", b === btn));
+        build();
+      });
+    });
     document.getElementById("new").onclick = build;
     build();
   </script>

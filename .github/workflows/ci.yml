@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify playable files exist
+        run: |
+          test -f PLAY.html
+          test -f docs/index.html
+          cmp -s PLAY.html docs/index.html
+      - name: Basic feature sanity
+        run: |
+          grep -q 'hexsweep-best-times' PLAY.html
+          grep -q 'data-diff' PLAY.html
+          grep -q 'function chord' PLAY.html
